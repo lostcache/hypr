@@ -2,23 +2,51 @@
 -- "cmd" = Super.
 --
 -- Workspaces:
---   1-5  -> external TV (matched by description, not connector name)
---   6-10 -> eDP-1 (laptop display; 10 is the 0 key)
+--   1-5  -> external monitor (matched by description, not connector name)
+--   6-10 -> internal laptop panel (10 is the 0 key)
 
 ----------------
 -- MONITORS   --
 ----------------
 
--- The DP connector number changes depending on which USB-C port/dock tunnel
--- is used, so match the panel by its (stable) description instead.
-local external_monitor = "desc:Sceptre Tech Inc X322BV-HDR 0x01010101"
+-- Connector names change depending on which USB-C port/dock is used, so match
+-- the panels by their (stable) descriptions instead.
+local internal_monitor = "desc:Sharp Corporation 0x148D"
+local external_monitor = "desc:Samsung Electric Company LS32H70xE"
 
 -- Internal 4K panel: 2560x1440 logical at 1.5x.
-hl.monitor({ output = "eDP-1", mode = "3840x2160@60", position = "0x0", scale = 1.5 })
+hl.monitor({ output = internal_monitor, mode = "3840x2160@60", position = "0x0", scale = 1.5 })
 
--- External TV: its EDID-preferred mode is 1360x768, which looks huge.
--- Force 1080p instead. Its 2560x1440 logical size sits to the right of eDP-1.
-hl.monitor({ output = external_monitor, mode = "1920x1080@60", position = "2560x0", scale = 0.75 })
+-- External 4K panel: native 4K, 2560x1440 logical at 1.5x so its size matches
+-- the internal panel.
+--
+-- 4K60 needs all four DisplayPort lanes. A USB-C hub/dock uses two of the
+-- four high-speed lanes for USB 3, leaving only two for DisplayPort, which
+-- caps the link at 1440p60; 4K30 is advertised but does not even train.
+--
+-- This laptop has no DP output. For 4K60, connect a USB-C-to-DP cable (or a
+-- USB-C-to-DP adapter plus the existing DP cable) directly to a left-side
+-- Thunderbolt 3 port, bypassing the hub. The Dell USB-C-to-HDMI adapter plus
+-- an HDMI cable also works if you have it.
+hl.monitor({ output = external_monitor, mode = "3840x2160@60", position = "2560x0", scale = 1.5 })
+
+-- On a two-lane port 4K60 cannot be applied. Fall back to the highest mode
+-- that actually works so the desktop does not stay in Hyprland's failed-mode
+-- fallback (1440p at an auto scale).
+local function fallback_external_mode()
+    local monitor = hl.get_monitor(external_monitor)
+    if monitor and monitor.width < 3840 then
+        hl.monitor({
+            output = external_monitor,
+            mode = "2560x1440@60",
+            position = "2560x0",
+            scale = 1,
+        })
+    end
+end
+
+-- Run after the monitor rules above have been applied (also on config reload).
+hl.timer(fallback_external_mode, { type = "oneshot", timeout = 3000 })
 
 ----------------
 -- LAYOUT     --
@@ -50,6 +78,11 @@ hl.on("hyprland.start", function()
     hl.exec_cmd("noctalia -d")
 end)
 
+-- Apply the same fallback when the external display is hot-plugged.
+hl.on("monitor.added", function()
+    hl.timer(fallback_external_mode, { type = "oneshot", timeout = 2000 })
+end)
+
 -- Noctalia surfaces: use its own animations and blur.
 hl.layer_rule({
     name = "noctalia",
@@ -70,9 +103,9 @@ for i = 2, 5 do
     hl.workspace_rule({ workspace = tostring(i), monitor = external_monitor, persistent = true })
 end
 
-hl.workspace_rule({ workspace = "6", monitor = "eDP-1", default = true, persistent = true })
+hl.workspace_rule({ workspace = "6", monitor = internal_monitor, default = true, persistent = true })
 for i = 7, 10 do
-    hl.workspace_rule({ workspace = tostring(i), monitor = "eDP-1", persistent = true })
+    hl.workspace_rule({ workspace = tostring(i), monitor = internal_monitor, persistent = true })
 end
 
 ----------------
@@ -94,8 +127,22 @@ end
 hl.bind("XF86AudioRaiseVolume",  hl.dsp.exec_cmd("noctalia msg volume-up 5"),              { locked = true, repeating = true })
 hl.bind("XF86AudioLowerVolume",  hl.dsp.exec_cmd("noctalia msg volume-down 5"),            { locked = true, repeating = true })
 hl.bind("XF86AudioMute",         hl.dsp.exec_cmd("noctalia msg volume-mute"),              { locked = true })
-hl.bind("XF86MonBrightnessUp",   hl.dsp.exec_cmd("noctalia msg brightness-up eDP-1 5"),    { locked = true, repeating = true })
-hl.bind("XF86MonBrightnessDown", hl.dsp.exec_cmd("noctalia msg brightness-down eDP-1 5"),  { locked = true, repeating = true })
+
+-- Noctalia's CLI needs the output name, so resolve it from the panel
+-- description instead of hard-coding a connector name.
+local brightness_keys_bound = false
+local function bind_brightness_keys()
+    if brightness_keys_bound then return end
+    local monitor = hl.get_monitor(internal_monitor)
+    local output = monitor and monitor.name
+    if not output then return end
+    brightness_keys_bound = true
+    hl.bind("XF86MonBrightnessUp",   hl.dsp.exec_cmd("noctalia msg brightness-up " .. output .. " 5"),   { locked = true, repeating = true })
+    hl.bind("XF86MonBrightnessDown", hl.dsp.exec_cmd("noctalia msg brightness-down " .. output .. " 5"), { locked = true, repeating = true })
+end
+
+bind_brightness_keys()
+hl.on("hyprland.start", bind_brightness_keys)
 
 -- Launcher
 hl.bind(mod .. " + Space", hl.dsp.exec_cmd("noctalia msg panel-toggle launcher"))
